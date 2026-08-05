@@ -15,7 +15,7 @@ canvas{display:block;max-width:100vw;max-height:100vh}
    prototype, adjust, and bake again whenever something needs to change. */
 const CONFIG = {
   "words": "BUILD ALL DREAMS . BAD STUDIO ",
-  "spawnIntervalMs": 600,
+  "spawnIntervalMs": 1000,
   "textColor": "#fffef7",
   "textOpacity": 100,
   "shapeType": "capsules",
@@ -442,11 +442,10 @@ const ColomboEngine = function ColomboEngine(canvas, CONFIG, opts){
   return { rebuild: rebuild, rebuildConstraints: rebuildConstraints, resize: resize, start: start, stop: stop };
 };
 const c = document.getElementById('c');
-ColomboEngine(c, CONFIG, { autoStart: true });
-function fit(){
-  const scale = Math.min(1, (window.innerWidth-40)/CONFIG.width, (window.innerHeight-40)/CONFIG.height);
-  c.style.transform = 'scale(' + scale + ')';
-}
-window.addEventListener('resize', fit);
-fit();
+   const engine = ColomboEngine(c, CONFIG, { autoStart: true });
+   function fit(){
+        engine.resize(window.innerWidth, window.innerHeight);
+   }
+   window.addEventListener('resize', fit);
+   fit();
 </script>
