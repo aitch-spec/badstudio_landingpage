@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Typeface Animation</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#fefef6;}
+body{display:flex;align-items:center;justify-content:center;}
+canvas{display:block;}
+</style>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+<script>
+window.TFA = window.TFA || {};
+
+/* Parametric skeleton typeface.
+ *
+ * Glyphs live in a normalized box: x 0..1 left-to-right, y 0..1 cap-top to
+ * baseline. Lowercase x-height starts at 0.25, descenders reach 1.25.
+ *
+ * Stretch is not a scale. Each glyph declares a seam (midX / mid); points on
+ * the far side of a seam absorb the full stretch, points on the near side
+ * absorb none, and a point sitting exactly on it absorbs half. Letters
+ * therefore pull apart at their joints the way a variable font axis behaves.
+ * Short flat runs straddling a seam are what turn that into a clean extension
+ * rather than a smeared curve.
+ */
+(function (TFA) {
+  'use strict';
+
+  var K = 0.5523;   // circle-to-bezier constant
+  var F = 0.42;     // corner radius as a fraction of the box
+
+  // Rounded-rectangle scaffold: named anchor points plus the four corner arcs
+  // in both directions. Most curved glyphs are assembled from these.
+  function box(x0, y0, x1, y1) {
+    var w = x1 - x0, h = y1 - y0;
+    var ax = x0 + F * w, bx = x1 - F * w;
+    var ay = y0 + F * h, by = y1 - F * h;
+    var cx = (1 - K) * F * w, cy = (1 - K) * F * h;
+    return {
+      tl: [x0, ay], t0: [ax, y0], t1: [bx, y0], tr: [x1, ay],
+      br: [x1, by], b1: [bx, y1], b0: [ax, y1], bl: [x0, by],
+      aTL: ['c', [x0, y0 + cy], [x0 + cx, y0], [ax, y0]],
+      aTR: ['c', [x1 - cx, y0], [x1, y0 + cy], [x1, ay]],
+      aBR: ['c', [x1, y1 - cy], [x1 - cx, y1], [bx, y1]],
+      aBL: ['c', [x0 + cx, y1], [x0, y1 - cy], [x0, by]],
+      rTL: ['c', [x0 + cx, y0], [x0, y0 + cy], [x0, ay]],
+      rTR: ['c', [x1, y0 + cy], [x1 - cx, y0], [bx, y0]],
+      rBR: ['c', [x1 - cx, y1], [x1, y1 - cy], [x1, by]],
+      rBL: ['c', [x0, y1 - cy], [x0 + cx, y1], [ax, y1]]
+    };
+  }
+
+  function ring(x0, y0, x1, y1) {
+    var b = box(x0, y0, x1, y1);
+    return [b.tl, b.aTL, b.t1, b.aTR, b.br, b.aBR, b.b0, b.aBL, b.tl];
+  }
+
+  // Open on the right, like C.
+  function cee(x0, y0, x1, y1) {
+    var b = box(x0, y0, x1, y1);
+    return [b.tr, b.rTR, b.t0, b.rTL, b.bl, b.rBL, b.b1, b.rBR];
+  }
+
+  var G = {};
+  function def(ch, contours, mid, midX) {
+    G[ch] = { c: contours, mid: mid == null ? 0.5 : mid, midX: midX == null ? 0.5 : midX };
+  }
+
+  var LC = 0.625;   // lowercase seam: middle of the x-height band
+
+  /* ---------------------------------------------------------------- upper */
+
+  def('A', [[[0, 1], [0.5, 0], [1, 1]], [[0.16, 0.68], [0.84, 0.68]]]);
+  def('B', [
+    [[0, 0], [0, 1]],
+    (function () { var b = box(0, 0, 0.86, 0.5); return [[0, 0], b.t1, b.aTR, b.br, b.aBR, b.b1, [0, 0.5]]; })(),
+    (function () { var b = box(0, 0.5, 1, 1); return [[0, 0.5], b.t1, b.aTR, b.br, b.aBR, b.b1, [0, 1]]; })()
+  ]);
+  def('C', [cee(0, 0, 1, 1)]);
+  def('D', [
+    [[0, 0], [0, 1]],
+    (function () { var b = box(0, 0, 1, 1); return [[0, 0], b.t1, b.aTR, b.br, b.aBR, b.b1, [0, 1]]; })()
+  ]);
+  def('E', [[[1, 0], [0, 0], [0, 1], [1, 1]], [[0, 0.5], [0.8, 0.5]]]);
+  def('F', [[[1, 0], [0, 0], [0, 1]], [[0, 0.5], [0.8, 0.5]]]);
+  def('G', [cee(0, 0, 1, 1).concat([[1, 0.62], [0.52, 0.62]])]);
+  def('H', [[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[0, 0.5], [1, 0.5]]]);
+  def('I', [[[0.5, 0], [0.5, 1]]]);
+  def('J', [[[0.75, 0], [0.75, 0.72],
+    ['c', [0.75, 0.9], [0.6, 1], [0.38, 1]],
+    ['c', [0.16, 1], [0.05, 0.88], [0.05, 0.72]]]]);
+  def('K', [[[0, 0], [0, 1]], [[1, 0], [0, 0.58]], [[0.3, 0.4], [1, 1]]]);
+  def('L', [[[0, 0], [0, 1], [1, 1]]]);
+  def('M', [[[0, 1], [0, 0], [0.5, 0.62], [1, 0], [1, 1]]]);
+  def('N', [[[0, 1], [0, 0], [1, 1], [1, 0]]]);
+  def('O', [ring(0, 0, 1, 1)]);
+  def('P', [
+    [[0, 0], [0, 1]],
+    (function () { var b = box(0, 0, 0.96, 0.56); return [[0, 0], b.t1, b.aTR, b.br, b.aBR, b.b1, [0, 0.56]]; })()
+  ]);
+  def('Q', [ring(0, 0, 1, 1), [[0.6, 0.72], [1.02, 1.08]]]);
+  def('R', [
+    [[0, 0], [0, 1]],
+    (function () { var b = box(0, 0, 0.96, 0.56); return [[0, 0], b.t1, b.aTR, b.br, b.aBR, b.b1, [0, 0.56]]; })(),
+    [[0.42, 0.56], [1, 1]]
+  ]);
+  def('S', [[[0.97, 0.22],
+    ['c', [0.97, 0.06], [0.8, 0], [0.5, 0]],
+    ['c', [0.2, 0], [0.03, 0.08], [0.03, 0.28]],
+    ['c', [0.03, 0.45], [0.2, 0.5], [0.5, 0.5]],
+    ['c', [0.8, 0.5], [0.97, 0.56], [0.97, 0.75]],
+    ['c', [0.97, 0.94], [0.8, 1], [0.5, 1]],
+    ['c', [0.2, 1], [0.03, 0.93], [0.03, 0.78]]]]);
+  def('T', [[[0, 0], [1, 0]], [[0.5, 0], [0.5, 1]]]);
+  def('U', [[[0, 0], [0, 0.58],
+    ['c', [0, 0.83], [0.18, 1], [0.5, 1]],
+    ['c', [0.82, 1], [1, 0.83], [1, 0.58]],
+    [1, 0]]]);
+  def('V', [[[0, 0], [0.5, 1], [1, 0]]]);
+  def('W', [[[0, 0], [0.22, 1], [0.5, 0.35], [0.78, 1], [1, 0]]]);
+  def('X', [[[0, 0], [1, 1]], [[1, 0], [0, 1]]]);
+  def('Y', [[[0, 0], [0.5, 0.5], [1, 0]], [[0.5, 0.5], [0.5, 1]]]);
+  def('Z', [[[0, 0], [1, 0], [0, 1], [1, 1]]]);
+
+  /* --------------------------------------------------------------- digits */
+
+  def('0', [ring(0, 0, 1, 1), [[0.82, 0.16], [0.18, 0.84]]]);
+  def('1', [[[0.22, 0.18], [0.5, 0], [0.5, 1]]]);
+  def('2', [[[0.05, 0.22],
+    ['c', [0.05, 0.06], [0.22, 0], [0.5, 0]],
+    ['c', [0.8, 0], [0.97, 0.1], [0.97, 0.3]],
+    ['c', [0.97, 0.52], [0.7, 0.64], [0.03, 1]],
+    [1, 1]]]);
+  def('3', [[[0.05, 0.2],
+    ['c', [0.05, 0.05], [0.22, 0], [0.5, 0]],
+    ['c', [0.8, 0], [0.95, 0.1], [0.95, 0.28]],
+    ['c', [0.95, 0.42], [0.8, 0.5], [0.55, 0.5]],
+    ['c', [0.85, 0.5], [0.97, 0.6], [0.97, 0.75]],
+    ['c', [0.97, 0.92], [0.8, 1], [0.5, 1]],
+    ['c', [0.2, 1], [0.03, 0.93], [0.03, 0.78]]]]);
+  def('4', [[[0.75, 1], [0.75, 0], [0.02, 0.72], [1, 0.72]]]);
+  def('5', [[[0.9, 0], [0.15, 0], [0.08, 0.45],
+    ['c', [0.32, 0.34], [0.95, 0.36], [0.95, 0.68]],
+    ['c', [0.95, 0.9], [0.75, 1], [0.5, 1]],
+    ['c', [0.25, 1], [0.05, 0.94], [0.03, 0.8]]]]);
+  def('6', [[[0.9, 0.12],
+    ['c', [0.75, 0], [0.55, 0], [0.4, 0.06]],
+    ['c', [0.15, 0.18], [0.05, 0.45], [0.05, 0.68]],
+    ['c', [0.05, 0.88], [0.25, 1], [0.5, 1]],
+    ['c', [0.78, 1], [0.95, 0.87], [0.95, 0.68]],
+    ['c', [0.95, 0.5], [0.78, 0.4], [0.5, 0.4]],
+    ['c', [0.25, 0.4], [0.07, 0.5], [0.05, 0.68]]]]);
+  def('7', [[[0, 0], [1, 0], [0.35, 1]]]);
+  def('8', [ring(0.06, 0, 0.94, 0.5), ring(0, 0.5, 1, 1)]);
+  def('9', [[[0.1, 0.88],
+    ['c', [0.25, 1], [0.45, 1], [0.6, 0.94]],
+    ['c', [0.85, 0.82], [0.95, 0.55], [0.95, 0.32]],
+    ['c', [0.95, 0.12], [0.75, 0], [0.5, 0]],
+    ['c', [0.22, 0], [0.05, 0.13], [0.05, 0.32]],
+    ['c', [0.05, 0.5], [0.22, 0.6], [0.5, 0.6]],
+    ['c', [0.75, 0.6], [0.93, 0.5], [0.95, 0.32]]]]);
+
+  /* ---------------------------------------------------------------- lower */
+
+  def('a', [ring(0, 0.25, 1, 1), [[1, 0.25], [1, 1]]], LC);
+  def('b', [[[0, 0], [0, 1]], ring(0, 0.25, 1, 1)], LC);
+  def('c', [cee(0, 0.25, 1, 1)], LC);
+  def('d', [[[1, 0], [1, 1]], ring(0, 0.25, 1, 1)], LC);
+  def('e', [
+    [[0, LC], [1, LC]],
+    (function () { var b = box(0, 0.25, 1, 1); return [b.br, b.tr, b.rTR, b.t0, b.rTL, b.bl, b.rBL, b.b1]; })()
+  ], LC);
+  def('f', [[[0.92, 0.06],
+    ['c', [0.76, -0.06], [0.36, -0.06], [0.36, 0.28]],
+    [0.36, 1]], [[0.04, 0.4], [0.86, 0.4]]], LC);
+  def('g', [ring(0, 0.25, 1, 1),
+    [[1, 0.25], [1, 1.02], ['c', [1, 1.22], [0.78, 1.3], [0.45, 1.24]]]], LC);
+  def('h', [[[0, 0], [0, 1]],
+    [[0, 0.6], ['c', [0, 0.35], [0.22, 0.25], [0.5, 0.25]],
+      ['c', [0.78, 0.25], [1, 0.38], [1, 0.62]], [1, 1]]], LC);
+  def('i', [[[0.5, 0.25], [0.5, 1]], [[0.44, 0.05], [0.56, 0.05]]], LC);
+  def('j', [[[0.6, 0.25], [0.6, 1.02],
+    ['c', [0.6, 1.22], [0.4, 1.28], [0.15, 1.2]]], [[0.54, 0.05], [0.66, 0.05]]], LC);
+  def('k', [[[0, 0], [0, 1]], [[0.9, 0.25], [0, 0.68]], [[0.3, 0.55], [0.95, 1]]], LC);
+  def('l', [[[0.5, 0], [0.5, 1]]], LC);
+  def('m', [[[0, 0.25], [0, 1]],
+    [[0, 0.55], ['c', [0, 0.33], [0.15, 0.25], [0.28, 0.25]],
+      ['c', [0.43, 0.25], [0.5, 0.36], [0.5, 0.58]], [0.5, 1]],
+    [[0.5, 0.55], ['c', [0.5, 0.33], [0.65, 0.25], [0.78, 0.25]],
+      ['c', [0.93, 0.25], [1, 0.36], [1, 0.58]], [1, 1]]], LC);
+  def('n', [[[0, 0.25], [0, 1]],
+    [[0, 0.6], ['c', [0, 0.35], [0.22, 0.25], [0.5, 0.25]],
+      ['c', [0.78, 0.25], [1, 0.38], [1, 0.62]], [1, 1]]], LC);
+  def('o', [ring(0, 0.25, 1, 1)], LC);
+  def('p', [[[0, 0.25], [0, 1.25]], ring(0, 0.25, 1, 1)], LC);
+  def('q', [[[1, 0.25], [1, 1.25]], ring(0, 0.25, 1, 1)], LC);
+  def('r', [[[0, 0.25], [0, 1]],
+    [[0, 0.6], ['c', [0, 0.34], [0.3, 0.25], [0.78, 0.27]]]], LC);
+  def('s', [[[0.97, 0.415],
+    ['c', [0.97, 0.295], [0.8, 0.25], [0.5, 0.25]],
+    ['c', [0.2, 0.25], [0.03, 0.31], [0.03, 0.46]],
+    ['c', [0.03, 0.5875], [0.2, 0.625], [0.5, 0.625]],
+    ['c', [0.8, 0.625], [0.97, 0.67], [0.97, 0.8125]],
+    ['c', [0.97, 0.955], [0.8, 1], [0.5, 1]],
+    ['c', [0.2, 1], [0.03, 0.9475], [0.03, 0.835]]]], LC);
+  def('t', [[[0.45, 0.05], [0.45, 0.82],
+    ['c', [0.45, 0.97], [0.6, 1.03], [0.82, 0.97]]], [[0.06, 0.3], [0.86, 0.3]]], LC);
+  def('u', [[[0, 0.25], [0, 0.68],
+    ['c', [0, 0.88], [0.2, 1], [0.5, 1]],
+    ['c', [0.8, 1], [1, 0.88], [1, 0.68]],
+    [1, 0.25]], [[1, 0.68], [1, 1]]], LC);
+  def('v', [[[0, 0.25], [0.5, 1], [1, 0.25]]], LC);
+  def('w', [[[0, 0.25], [0.22, 1], [0.5, 0.5], [0.78, 1], [1, 0.25]]], LC);
+  def('x', [[[0, 0.25], [1, 1]], [[1, 0.25], [0, 1]]], LC);
+  def('y', [[[0, 0.25], [0.5, 1]], [[1, 0.25], [0.28, 1.25]]], LC);
+  def('z', [[[0, 0.25], [1, 0.25], [0, 1], [1, 1]]], LC);
+
+  /* ---------------------------------------------------------- punctuation */
+
+  def(' ', []);
+  def('.', [[[0.44, 0.98], [0.56, 0.98]]]);
+  def(',', [[[0.56, 0.94], [0.4, 1.14]]]);
+  def('!', [[[0.5, 0], [0.5, 0.68]], [[0.44, 0.98], [0.56, 0.98]]]);
+  def('?', [[[0.08, 0.2],
+    ['c', [0.08, 0.04], [0.28, 0], [0.5, 0]],
+    ['c', [0.78, 0], [0.95, 0.12], [0.95, 0.3]],
+    ['c', [0.95, 0.52], [0.5, 0.54], [0.5, 0.72]]], [[0.44, 0.98], [0.56, 0.98]]]);
+  def("'", [[[0.5, 0], [0.5, 0.2]]]);
+  def('"', [[[0.35, 0], [0.35, 0.2]], [[0.65, 0], [0.65, 0.2]]]);
+  def('-', [[[0.15, 0.55], [0.85, 0.55]]]);
+  def('–', [[[0.04, 0.55], [0.96, 0.55]]]);
+  def('_', [[[0.05, 1.15], [0.95, 1.15]]]);
+  def(':', [[[0.44, 0.42], [0.56, 0.42]], [[0.44, 0.98], [0.56, 0.98]]]);
+  def(';', [[[0.44, 0.42], [0.56, 0.42]], [[0.56, 0.94], [0.4, 1.14]]]);
+  def('(', [[[0.7, 0], ['c', [0.34, 0.25], [0.34, 0.75], [0.7, 1]]]]);
+  def(')', [[[0.3, 0], ['c', [0.66, 0.25], [0.66, 0.75], [0.3, 1]]]]);
+  def('[', [[[0.7, 0], [0.34, 0], [0.34, 1], [0.7, 1]]]);
+  def(']', [[[0.3, 0], [0.66, 0], [0.66, 1], [0.3, 1]]]);
+  def('/', [[[0.9, 0], [0.1, 1]]]);
+  def('\\', [[[0.1, 0], [0.9, 1]]]);
+  def('+', [[[0.5, 0.3], [0.5, 0.85]], [[0.15, 0.575], [0.85, 0.575]]]);
+  def('=', [[[0.12, 0.45], [0.88, 0.45]], [[0.12, 0.7], [0.88, 0.7]]]);
+  def('*', [[[0.5, 0.05], [0.5, 0.45]], [[0.32, 0.13], [0.68, 0.37]], [[0.68, 0.13], [0.32, 0.37]]]);
+  def('#', [[[0.3, 0.08], [0.2, 0.95]], [[0.72, 0.08], [0.62, 0.95]],
+    [[0.06, 0.38], [0.9, 0.38]], [[0.04, 0.68], [0.88, 0.68]]]);
+  def('%', [[[0.9, 0.05], [0.1, 0.95]], ring(0.02, 0.05, 0.42, 0.45), ring(0.58, 0.55, 0.98, 0.95)]);
+  def('&', [[[0.95, 1],
+    ['c', [0.6, 0.55], [0.25, 0.35], [0.25, 0.2]],
+    ['c', [0.25, 0.05], [0.4, 0], [0.52, 0]],
+    ['c', [0.66, 0], [0.75, 0.08], [0.75, 0.2]],
+    ['c', [0.75, 0.42], [0.05, 0.5], [0.05, 0.76]],
+    ['c', [0.05, 0.92], [0.22, 1], [0.42, 1]],
+    ['c', [0.68, 1], [0.85, 0.85], [0.92, 0.62]]]]);
+  def('@', [cee(0, 0, 1, 1), ring(0.32, 0.33, 0.7, 0.72)]);
+
+  TFA.GLYPHS = G;
+})(window.TFA);
+
+window.TFA = window.TFA || {};
+
+(function (TFA) {
+  'use strict';
+
+  var cache = {};
+
+  // Beziers are flattened once per (char, resolution) and reused for every
+  // letter on every frame — the curves never change shape, only the affine
+  // stretch applied to their points does.
+  function flatten(contour, segs) {
+    var pts = [contour[0][0], contour[0][1]];
+    var cx = contour[0][0], cy = contour[0][1];
+
+    for (var j = 1; j < contour.length; j++) {
+      var s = contour[j];
+      if (s[0] === 'c') {
+        var x1 = s[1][0], y1 = s[1][1];
+        var x2 = s[2][0], y2 = s[2][1];
+        var x3 = s[3][0], y3 = s[3][1];
+        for (var k = 1; k <= segs; k++) {
+          var t = k / segs, u = 1 - t;
+          var a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t;
+          pts.push(a * cx + b * x1 + c * x2 + d * x3,
+                   a * cy + b * y1 + c * y2 + d * y3);
+        }
+        cx = x3; cy = y3;
+      } else {
+        cx = s[0]; cy = s[1];
+        pts.push(cx, cy);
+      }
+    }
+    return Float64Array.from(pts);
+  }
+
+  // { mid, midX, contours: [Float64Array of x,y pairs] } in normalized space,
+  // or null for characters the typeface does not define.
+  TFA.glyphOutline = function (ch, segs) {
+    var key = ch + '|' + segs;
+    if (key in cache) return cache[key];
+
+    var g = TFA.GLYPHS[ch];
+    var out = null;
+    if (g) {
+      var cs = [];
+      for (var i = 0; i < g.c.length; i++) {
+        if (g.c[i].length) cs.push(flatten(g.c[i], segs));
+      }
+      out = { mid: g.mid, midX: g.midX, contours: cs };
+    }
+    cache[key] = out;
+    return out;
+  };
+
+  // Stretch weight: points past a seam absorb it fully, points on it absorb
+  // half. See glyphs.js for why the typeface is built this way.
+  TFA.stretchX = function (x, mid) { return x < mid ? 0 : x > mid ? 1 : 0.5; };
+
+  // 2D convenience path, used by the glyph proof sheet.
+  TFA.drawGlyph = function (p, ch, typeX, typeY, strX, strY) {
+    var o = TFA.glyphOutline(ch, 12);
+    if (!o) return;
+    var w = TFA.stretchX;
+
+    for (var i = 0; i < o.contours.length; i++) {
+      var c = o.contours[i];
+      p.beginShape();
+      for (var j = 0; j < c.length; j += 2) {
+        p.vertex(c[j] * typeX + w(c[j], o.midX) * strX,
+                 c[j + 1] * typeY + w(c[j + 1], o.mid) * strY);
+      }
+      p.endShape();
+    }
+  };
+})(window.TFA);
+
+window.TFA = window.TFA || {};
+
+/* p5's endShape builds stroke geometry in JavaScript, costing roughly 8µs per
+ * vertex. At a few thousand vertices per frame that alone caps the animation
+ * around 20fps, which is what made the dense presets painful to watch.
+ *
+ * This draws the same lines straight through WebGL instead: one instanced draw
+ * call per colour, with segments expanded to screen-space quads in the vertex
+ * shader so strokeWeight still behaves. The CPU only has to hand over the
+ * segment endpoints it already computed.
+ */
+(function (TFA) {
+  'use strict';
+
+  var VERT =
+    'attribute vec2 aCorner;' +
+    'attribute vec3 aA;' +
+    'attribute vec3 aB;' +
+    'uniform mat4 uPV;' +
+    'uniform vec2 uHalfViewport;' +
+    'uniform float uWidth;' +
+    'varying vec2 vSeg;' +   // position in segment space, pixels
+    'varying float vLen;' +
+    'varying float vHW;' +
+    'void main() {' +
+    '  vec4 ca = uPV * vec4(aA, 1.0);' +
+    '  vec4 cb = uPV * vec4(aB, 1.0);' +
+    '  vec4 cur = mix(ca, cb, aCorner.x);' +
+    '  vec2 sa = (ca.xy / ca.w) * uHalfViewport;' +
+    '  vec2 sb = (cb.xy / cb.w) * uHalfViewport;' +
+    '  vec2 d = sb - sa;' +
+    '  float len = length(d);' +
+    '  vec2 dir = len > 0.0 ? d / len : vec2(1.0, 0.0);' +
+    '  vec2 nrm = vec2(-dir.y, dir.x);' +
+    // Pad by a pixel beyond the cap so the antialiased edge has room.
+    '  float hw = uWidth * 0.5;' +
+    '  float pad = hw + 1.0;' +
+    '  float along = aCorner.x * 2.0 - 1.0;' +
+    '  vec2 off = nrm * pad * aCorner.y + dir * pad * along;' +
+    '  cur.xy += (off / uHalfViewport) * cur.w;' +
+    '  vSeg = vec2(aCorner.x * len + pad * along, pad * aCorner.y);' +
+    '  vLen = len;' +
+    '  vHW = hw;' +
+    '  gl_Position = cur;' +
+    '}';
+
+  // Capsule coverage: round caps at both ends, which also fills the joins
+  // between consecutive segments of a flattened curve.
+  var FRAG =
+    'precision mediump float;' +
+    'uniform vec4 uColor;' +
+    'varying vec2 vSeg;' +
+    'varying float vLen;' +
+    'varying float vHW;' +
+    'void main() {' +
+    '  float x = vSeg.x;' +
+    '  float d = x < 0.0 ? length(vSeg)' +
+    '          : x > vLen ? length(vec2(x - vLen, vSeg.y))' +
+    '          : abs(vSeg.y);' +
+    '  float a = 1.0 - smoothstep(vHW - 0.5, vHW + 0.5, d);' +
+    '  if (a <= 0.0) discard;' +
+    '  gl_FragColor = vec4(uColor.rgb, uColor.a * a);' +
+    '}';
+
+  // Two triangles spanning the segment: x is position along it, y is the side.
+  var CORNERS = new Float32Array([
+    0, -1, 0, 1, 1, -1,
+    1, -1, 0, 1, 1, 1
+  ]);
+
+  function compile(gl, type, src) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      throw new Error('line shader: ' + gl.getShaderInfoLog(s));
+    }
+    return s;
+  }
+
+  // Per-context setup, cached on the context itself.
+  function setup(gl) {
+    if (gl.__tfaLine) return gl.__tfaLine;
+
+    var prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
+    gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FRAG));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error('line program: ' + gl.getProgramInfoLog(prog));
+    }
+
+    var ctx = {
+      prog: prog,
+      vao: gl.createVertexArray(),
+      corners: gl.createBuffer(),
+      segs: gl.createBuffer(),
+      capacity: 0,
+      aCorner: gl.getAttribLocation(prog, 'aCorner'),
+      aA: gl.getAttribLocation(prog, 'aA'),
+      aB: gl.getAttribLocation(prog, 'aB'),
+      uPV: gl.getUniformLocation(prog, 'uPV'),
+      uHalf: gl.getUniformLocation(prog, 'uHalfViewport'),
+      uWidth: gl.getUniformLocation(prog, 'uWidth'),
+      uColor: gl.getUniformLocation(prog, 'uColor')
+    };
+
+    gl.bindVertexArray(ctx.vao);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, ctx.corners);
+    gl.bufferData(gl.ARRAY_BUFFER, CORNERS, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(ctx.aCorner);
+    gl.vertexAttribPointer(ctx.aCorner, 2, gl.FLOAT, false, 8, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, ctx.segs);
+    gl.enableVertexAttribArray(ctx.aA);
+    gl.vertexAttribPointer(ctx.aA, 3, gl.FLOAT, false, 24, 0);
+    gl.vertexAttribDivisor(ctx.aA, 1);
+    gl.enableVertexAttribArray(ctx.aB);
+    gl.vertexAttribPointer(ctx.aB, 3, gl.FLOAT, false, 24, 12);
+    gl.vertexAttribDivisor(ctx.aB, 1);
+
+    gl.bindVertexArray(null);
+    gl.__tfaLine = ctx;
+    return ctx;
+  }
+
+  TFA.lineBatchSupported = function (p) {
+    var gl = p._renderer && p._renderer.GL;
+    return !!(gl && typeof gl.createVertexArray === 'function' &&
+              typeof gl.drawArraysInstanced === 'function' &&
+              p._renderer.uPMatrix && p._renderer.uMVMatrix);
+  };
+
+  // data: Float32Array laid out ax,ay,az,bx,by,bz per segment.
+  TFA.drawLineBatch = function (p, data, segCount, rgba, widthPx) {
+    if (!segCount) return;
+    var r = p._renderer;
+    var gl = r.GL;
+    var ctx = setup(gl);
+
+    var vp = gl.getParameter(gl.VIEWPORT);
+    var halfW = vp[2] / 2, halfH = vp[3] / 2;
+    // strokeWeight is in CSS pixels; the drawing buffer may be larger.
+    var scale = p.width ? vp[2] / p.width : 1;
+
+    // Projection * view. The model transform is already baked into the data.
+    var pv = mul(r.uPMatrix.mat4, r.uMVMatrix.mat4);
+
+    var prevProg = gl.getParameter(gl.CURRENT_PROGRAM);
+    var prevBuf = gl.getParameter(gl.ARRAY_BUFFER_BINDING);
+    var hadBlend = gl.isEnabled(gl.BLEND);
+
+    gl.enable(gl.BLEND);
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(ctx.prog);
+    gl.bindVertexArray(ctx.vao);
+
+    var needed = segCount * 6;
+    gl.bindBuffer(gl.ARRAY_BUFFER, ctx.segs);
+    if (ctx.capacity < needed) {
+      gl.bufferData(gl.ARRAY_BUFFER, data.byteLength, gl.DYNAMIC_DRAW);
+      ctx.capacity = data.length;
+    }
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, data.subarray(0, needed));
+
+    gl.uniformMatrix4fv(ctx.uPV, false, pv);
+    gl.uniform2f(ctx.uHalf, halfW, halfH);
+    gl.uniform1f(ctx.uWidth, Math.max(widthPx, 0.05) * scale);
+    gl.uniform4f(ctx.uColor, rgba[0], rgba[1], rgba[2], rgba[3]);
+
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, segCount);
+
+    gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, prevBuf);
+    gl.useProgram(prevProg);
+    if (!hadBlend) gl.disable(gl.BLEND);
+  };
+
+  var PV = new Float32Array(16);
+  function mul(a, b) {
+    for (var c = 0; c < 4; c++) {
+      for (var r = 0; r < 4; r++) {
+        PV[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] +
+                        a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+      }
+    }
+    return PV;
+  }
+})(window.TFA);
+
+window.TFA = window.TFA || {};
+
+(function (TFA) {
+  'use strict';
+
+  /* p5's immediate mode uploads a fresh GPU buffer for every beginShape /
+   * endShape pair, so drawing each letter separately costs hundreds of draw
+   * calls per frame and stalls on the heavy presets. Instead the transform
+   * stack is evaluated here in JS and every letter is appended to one of two
+   * vertex batches (near ink and far ink), which cost one draw call each.
+   *
+   * Matrices are column-major and post-multiplied, matching what p5's
+   * translate / rotate would have done.
+   */
+
+  function identity(m) {
+    m[0] = 1; m[1] = 0; m[2] = 0; m[3] = 0;
+    m[4] = 0; m[5] = 1; m[6] = 0; m[7] = 0;
+    m[8] = 0; m[9] = 0; m[10] = 1; m[11] = 0;
+    m[12] = 0; m[13] = 0; m[14] = 0; m[15] = 1;
+  }
+
+  function copy(dst, src) { for (var i = 0; i < 16; i++) dst[i] = src[i]; }
+
+  function translate(m, x, y, z) {
+    m[12] += m[0] * x + m[4] * y + m[8] * z;
+    m[13] += m[1] * x + m[5] * y + m[9] * z;
+    m[14] += m[2] * x + m[6] * y + m[10] * z;
+  }
+
+  function rotateX(m, a) {
+    var c = Math.cos(a), s = Math.sin(a);
+    for (var i = 0; i < 4; i++) {
+      var b = m[4 + i], d = m[8 + i];
+      m[4 + i] = b * c + d * s;
+      m[8 + i] = d * c - b * s;
+    }
+  }
+
+  function rotateY(m, a) {
+    var c = Math.cos(a), s = Math.sin(a);
+    for (var i = 0; i < 4; i++) {
+      var b = m[i], d = m[8 + i];
+      m[i] = b * c - d * s;
+      m[8 + i] = b * s + d * c;
+    }
+  }
+
+  function rotateZ(m, a) {
+    var c = Math.cos(a), s = Math.sin(a);
+    for (var i = 0; i < 4; i++) {
+      var b = m[i], d = m[4 + i];
+      m[i] = b * c + d * s;
+      m[4 + i] = d * c - b * s;
+    }
+  }
+
+  // Scratch reused across frames; contents mean nothing between calls.
+  var BASE = new Float64Array(16);
+  var L = new Float64Array(16);
+  var nearBuf = new Float32Array(4096), nearN = 0;
+  var farBuf = new Float32Array(4096), farN = 0;
+
+  function grow(buf, need) {
+    if (buf.length >= need) return buf;
+    var size = buf.length;
+    while (size < need) size *= 2;
+    return new Float32Array(size);
+  }
+
+  // Appends the glyph's segments, transformed by L, as line-pair vertices.
+  function emit(outline, typeX, typeY, sX, sY, z, isNear) {
+    var cs = outline.contours, mx = outline.midX, my = outline.mid;
+    var w = TFA.stretchX;
+
+    for (var i = 0; i < cs.length; i++) {
+      var c = cs[i];
+      var need = (isNear ? nearN : farN) + (c.length / 2 - 1) * 6;
+      if (isNear) nearBuf = grow(nearBuf, need); else farBuf = grow(farBuf, need);
+      var buf = isNear ? nearBuf : farBuf;
+      var n = isNear ? nearN : farN;
+
+      var px = 0, py = 0, pz = 0;
+      for (var j = 0; j < c.length; j += 2) {
+        var gx = c[j], gy = c[j + 1];
+        var lx = gx * typeX + w(gx, mx) * sX;
+        var ly = gy * typeY + w(gy, my) * sY;
+
+        var X = L[0] * lx + L[4] * ly + L[8] * z + L[12];
+        var Y = L[1] * lx + L[5] * ly + L[9] * z + L[13];
+        var Z = L[2] * lx + L[6] * ly + L[10] * z + L[14];
+
+        if (j) { buf[n++] = px; buf[n++] = py; buf[n++] = pz;
+                 buf[n++] = X; buf[n++] = Y; buf[n++] = Z; }
+        px = X; py = Y; pz = Z;
+      }
+      if (isNear) nearN = n; else farN = n;
+    }
+  }
+
+  function rgba(c) {
+    return [p5.prototype.red(c) / 255, p5.prototype.green(c) / 255,
+            p5.prototype.blue(c) / 255, p5.prototype.alpha(c) / 255];
+  }
+
+  function flush(p, buf, n, colour, width, fast) {
+    if (!n) return;
+    if (fast) {
+      TFA.drawLineBatch(p, buf, n / 6, rgba(colour), width);
+      return;
+    }
+    p.stroke(colour);
+    p.beginShape(p.LINES);
+    for (var i = 0; i < n; i += 3) p.vertex(buf[i], buf[i + 1], buf[i + 2]);
+    p.endShape();
+  }
+
+  TFA.render = function (p, prm, frame) {
+    var text = String(prm.text == null ? '' : prm.text);
+    var len = text.length;
+
+    p.background(prm.bkgdColor);
+    if (!len || !prm.typeStroke) return;
+
+    var typeX = prm.typeX, typeY = prm.typeY;
+    var stackHeight = (typeY + prm.strecherY / 2) + 5 + prm.stackGap;
+    var pieSlice = p.TWO_PI / len;
+    var waveOffset = pieSlice * prm.waveCount;
+    var phase = frame * (prm.waveSpeed / 1000);
+
+    // Curve resolution follows glyph size: tiny type needs far fewer segments.
+    var segs = Math.max(3, Math.min(12, Math.round((typeY + prm.strecherY) / 6)));
+
+    nearN = 0;
+    farN = 0;
+
+    identity(BASE);
+    translate(BASE, 0, 0, prm.zoomCamera);
+    rotateX(BASE, p.radians(prm.xRotCamera));
+    rotateY(BASE, p.radians(prm.yRotCamera));
+    rotateZ(BASE, p.radians(prm.zRotCamera));
+    translate(BASE, 0, -(prm.stackNum - 1) * stackHeight / 2, 0);
+    rotateY(BASE, frame * (prm.rRotate / 1000));
+
+    for (var i = 0; i < len * prm.stackNum; i++) {
+      var ring = i % len;
+      var outline = TFA.glyphOutline(text.charAt(ring), segs);
+      if (!outline) continue;
+
+      var row = Math.floor(i / len);
+      var ringPhase = ring * waveOffset + phase;
+      var rowPhase = row * waveOffset + phase;
+
+      // Alternating rows run a half-cycle out of step, which is what produces
+      // the interlocking read on the stacked presets.
+      var sY = p.map(p.sin(ringPhase + (row % 2 ? 0 : p.PI)), -1, 1, 0, prm.strecherY);
+      var sX = p.map(p.sin(rowPhase), -1, 1, 0, prm.strecherX);
+
+      copy(L, BASE);
+      rotateY(L, row * prm.rOffset);
+      translate(L, 0, row * stackHeight, 0);
+      rotateY(L, ring * pieSlice);
+      translate(L, 0, 0, prm.radius);
+
+      if (prm.long) translate(L, 0, 0, p.sin(rowPhase) * prm.long);
+      if (prm.zaxis) translate(L, 0, p.sin(ringPhase) * prm.zaxis, 0);
+      if (prm.wave) translate(L, 0, 0, p.sin(ringPhase) * prm.wave);
+
+      if (prm.yRotTweak) rotateY(L, Math.cos(ringPhase) * -p.radians(prm.yRotTweak));
+      if (prm.xRotTweak) rotateX(L, Math.cos(ringPhase) * -p.radians(prm.xRotTweak));
+
+      if (prm.long) {
+        // Long displaces each row along the radius, so the surface between
+        // rows is no longer vertical. Tilt the glyph to sit tangent to it,
+        // using the slope between the neighbouring rows.
+        var pre = p.sin((row - 1) * waveOffset + phase) * prm.long;
+        var post = p.sin((row + 1) * waveOffset + phase) * prm.long;
+        rotateX(L, Math.atan2(stackHeight * 2, pre - post) - p.PI / 2);
+      }
+
+      if (prm.zRotTweak) rotateZ(L, Math.cos(ringPhase) * p.radians(prm.zRotTweak));
+
+      translate(L, -(typeX + sX) / 2, -(typeY + sY) / 2, 0);
+
+      emit(outline, typeX, typeY, sX, sY, 0, true);
+      emit(outline, typeX, typeY, sX, sY, -1, false);
+    }
+
+    var ink = p.color(prm.strokeColor);
+    // The far side of the cylinder is drawn a hair behind in a faded ink; that
+    // contrast is what makes the form read as a solid volume rather than a
+    // tangle of overlapping letters.
+    var far = p.lerpColor(ink, p.color(prm.bkgdColor), 0.75);
+
+    var fast = TFA.lineBatchSupported(p);
+    p.noFill();
+    p.strokeWeight(prm.typeStroke);
+    flush(p, farBuf, farN, far, prm.typeStroke, fast);
+    flush(p, nearBuf, nearN, ink, prm.typeStroke, fast);
+  };
+})(window.TFA);
+
+</script>
+<script>
+(function () {
+  var PARAMS = {"text":"BAD STUDIO  BAD STUDIO ","strokeColor":"#535353","bkgdColor":"#fefef6","aspect":"movie","radius":178,"stackNum":11,"stackGap":7,"rRotate":-3,"rOffset":0.16,"waveCount":6,"waveSpeed":36,"wave":10,"long":23,"zaxis":0,"strecherX":27,"strecherY":-7,"typeX":16,"typeY":40,"typeStroke":8.7,"xRotTweak":15,"yRotTweak":35,"zRotTweak":0,"xRotCamera":-20,"yRotCamera":10,"zRotCamera":1,"zoomCamera":-2};
+  var BASE = [1280,720];
+  TFA.params = PARAMS;
+  TFA.sketch = new p5(function (p) {
+    function fit() {
+      var s = Math.min(window.innerWidth / BASE[0], window.innerHeight / BASE[1]);
+      var cv = document.querySelector("canvas");
+      if (!cv) return;
+      cv.style.width = Math.round(BASE[0] * s) + "px";
+      cv.style.height = Math.round(BASE[1] * s) + "px";
+    }
+    p.setup = function () {
+      p.createCanvas(BASE[0], BASE[1], p.WEBGL);
+      fit();
+    };
+    p.draw = function () { TFA.render(p, PARAMS, p.frameCount); };
+    p.windowResized = fit;
+  }, document.body);
+})();
+</script>
+</body>
+</html>
